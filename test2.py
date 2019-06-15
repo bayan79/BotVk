@@ -6,6 +6,116 @@ import os
 from cairosvg import svg2pdf, svg2png
 from fpdf import FPDF
 
+header_pstu = {
+    'Host': 'elib.pstu.ru',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:67.0) Gecko/20100101 Firefox/67.0',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
+    'Accept-Encoding': 'gzip, deflate',
+    'Referer': 'http://elib.pstu.ru/vufind/Search/Results?lookfor=%D0%B0%D0%BD%D0%B0%D0%BD%D0%B0%D1%81&type=AllFields&limit=25&sort=relevance',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Pragma': 'no-cache',
+    'Cache-Control': 'no-cache'
+}
+
+def bids_by_search(search: str, count: int):
+    url_search = "http://elib.pstu.ru/vufind/Search/Results?lookfor={0}&type=AllFields&limit={1}&sort=relevance".format(search, count)
+    page = requests.get(url_search).text.encode('utf-8')
+    doc = lxml.html.document_fromstring(page)
+
+    results = []
+
+    for res in range(count):
+        result = {}
+        read_online_xpath = f'/html/body/main/article/section/div/div[1]/form/div[{res+2}]/div[2]/table/tr[1]/td[1]'
+        book_link = doc.xpath(read_online_xpath+'/a/@href')
+        if not book_link:
+            print(book_link)
+            continue
+        bids_find = re.findall(r'/vufind/Record/(\w+)', book_link[0])
+        
+        result['bid'] = bids_find[0]
+        link = doc.xpath(read_online_xpath+'/span/a/@href')
+        if link:
+            count_pages_query = requests.get('http://elib.pstu.ru{bid}/Description#tabnav'.format(bid=book_link[0]), headers=header_pstu).text.encode('utf-8')
+            # print(link)
+            with open('page.html', 'wb+') as f:
+                f.write(count_pages_query)
+                f.close()
+            ids_pstu = re.findall(r'fDocumentId=(\d+)', link[0])
+            ids_lan = re.findall(r'pl1_id=(\d+)', link[0])
+            # print(ids_pstu, ids_lan)
+            if ids_pstu:
+                result['book'] = int(ids_pstu[0])
+                result['source'] = 'pstu'
+            elif ids_lan: 
+                result['book'] = int(ids_lan[0])
+                result['source'] = 'lan'
+
+        results.append(result)
+    return results
+
+def whereCanFind(bid):
+    url= 'http://elib.pstu.ru/Record/{0}/AjaxTab'.format(bid)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Encoding':'gzip, deflate',
+        'Accept-Language':'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
+        'Cache-Control'	:'max-age=0',
+        'Connection':'keep-alive',
+        'Content-Length':'12',
+        'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8',
+        'Host':'elib.pstu.ru',
+        'Referer':'http://elib.pstu.ru/Record/{0}/Holdings'.format(bid),
+        'X-Requested-With':'XMLHttpRequest',
+    }
+    data = {'tab':'holdings'}
+
+    response = requests.post(url, data=data,headers=headers).text
+    
+    regAudit = r'(?<=\<\/i\>&nbsp;).*?(?=\<\/a\>)'
+    regName = r'(?<=\<div class\=\"alert alert\-info\" role\=\"alert\"\>\<h4\>).*?(?= \<span)'
+
+    audits = re.findall(regAudit, response)
+    names = re.findall(regName, response)
+    if audits and names:
+        result = [{'aud': audits[i], 'audName': names[i] } for i in range(len(audits))]
+    else:
+        result = {}
+    return result
+
+def get_info(bid):
+    #Get title+author
+    
+    urlBook = "http://elib.pstu.ru/Record/{0}/Holdings#tabnav".format(bid)
+    pageBook = requests.get(urlBook).text.encode('utf-8')
+    
+    docBook = lxml.html.document_fromstring(pageBook)
+
+    author_find = docBook.xpath('.//*[@property="author"]/a/text()')
+    if author_find:
+        author = ', '.join(author_find)
+    else:
+        author = 'нет информации'
+    name_find = docBook.xpath('/html/body/main/article/section/div/div[2]/h2/text()')
+    if name_find:
+        name = name_find[0]
+    else:
+        name = 'нет информации'
+
+    place_find = whereCanFind(bid)
+    if place_find:
+        places = '\n'.join(['\t{0} ({1})'.format(place['audName'], place['aud']) for place in place_find])
+    else:
+        places = '\tнет информации'
+    book = {'bid':bid, 'author': author , 'name': name, 'places' : places}
+    
+    answer = 'Автор(ы): {0}\nНазвание: {1}\nГде найти:\n{2}\nСсылка:\n\t{3}\n\n'.format(book['author'], book['name'], places, urlBook)
+    book['to_str'] = answer
+    return book
+
 def get_book_pstu(book_id: int, bid: str):
     print(book_id)
     header_referer = {'Referer': 'http://elib.pstu.ru/Record/{0}/Holdings'.format(bid)}
